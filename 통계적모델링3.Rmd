@@ -1,0 +1,185 @@
+---
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 통계적모델링과 머신러닝 실습 과제 Q5
+
+##### Consider ‘Q5.csv’ data file. To predict the variable Y based on (X1, X2, X3), use a data modelling technique.
+
+
+```{r cars}
+library(tidyverse)
+
+##데이터 로드
+data = read.csv("C:/Users/User/Desktop/통계적모델링과머신러닝/Q5.csv")
+
+##데이터 형태 확인
+data %>% head()
+
+data %>% dim() ## 200 4
+
+pairs(data) 
+```
+
+X1는 선형관계, X2는 명확한 패턴이 보이지 않으며, X3는 Y와 2차 함수의 형태가 보인다.
+
+
+### (1) Investigate whether there is an irrelevant input variable for the prediction of Y. If it exists, find it and justify why it is the irrelevant variable.
+
+```{r pressure}
+##  Linear Regression 적합
+fit1 = lm(Y ~., data = data)
+par(mfrow = c(2,2))
+summary(fit1) ## R-squared : 0.417
+
+
+```
+
+첫번째, 세번재 플랏을 보면 잔차가 뒤에 갈수록 커져 등분산을 만족하지 않는 것을 알 수 있다.
+두번째, 플랏을 보면 y=x의 직선에 거의 있기에 Normality는 대체로 만족한다고 할 수 있다.
+
+
+```{r}
+##단계적 선택법을 사용하여 변수 선택
+fit2 = step(fit1, direction = 'both')
+summary(fit2)
+
+par(mfrow = c(2,2))
+plot(fit2) 
+
+```
+
+단계적 변수 선택법을 사용하여 변수를 선택하였다. X1, X2, X3를 모두 회귀모델에 포함하는 것 보다, X1, X3만 모델에 포함했을 때 더 높은 AIC를 갖는다. 
+Pair플랏와 위의 결과를 고려하여 X2를 다음의 모델링에 포함시키지 않고 진행하였다.
+
+### (2) Construct the best parametric regression model and estimate the model parameters.
+
+Pair플랏에서 X3가 이차함수의 형태를 가진다고 생각했으나 더 명확한 분석을 위해 GAM을 적합하였다.
+```{r}
+library(gam)
+fit3 = gam(Y ~ s(X1, 5) + s(X3, 5), data = data)
+par(mfrow=c(1, 2))
+plot(fit3)
+
+```
+
+플랏을 통해 X1은 Linear한 형태를 X3는 이차함수의 형태를 사용하기로 결정하였다.
+
+
+적합할 함수식은 다음과 같다.
+
+$$
+Y = \beta_1 + \beta_2X1 + \beta_3X3 + \beta_4X3^2
+$$
+
+```{r}
+fit4 = lm(Y ~ X1 + poly(X3, 2), data = data)
+summary(fit4)
+```
+
+```{r}
+anova(fit2, fit4)
+```
+
+Anova 테스트를 통해 위에서 적합한 모델이 더 유의하다는 것을 알 수 있다.
+
+```{r}
+plot(fit4)
+```
+
+그러나 첫번째, 세번째 플랏을 보면 잔차가 점점 커지는 양상을 띄고 있어 등분산성을 만족시키지 않는다는 것을 알 수 있다.
+따라서 Variance Function을 사용하여 분산을 추정하고자 한다.
+Linear Variance Function을 다음과 같이 가정하여 모델링을 하였다.
+
+$$
+|r_i| = \gamma_1 + \gamma_2\hat{y_i}
+$$
+
+
+```{r}
+library(matrixcalc)
+
+## 모델 정의
+f=function(beta, X){
+  X1 = X[,1]; X3 = X[,3]
+  beta[1] + beta[2]*X1 + beta[3]*X3 + beta[4]*X3^2
+}
+
+## Objective function for mean function
+obj.mean = function(beta, Y, X, S) t(Y - f(beta, X)) %*% solve(S) %*% (Y - f(beta, X))
+
+## Gradient vector of the objective function
+gr.mean = function(beta, Y, X, S){
+  sigma_2 = diag(S)
+  X1 = X[,1]; X3 = X[,3]
+  R = Y - f(beta, X)
+  c( -2*sum(R/sigma_2), -2*sum(R*X1/sigma_2), -2*sum(R*X3/sigma_2), -2*sum(R*X3^2/sigma_2))
+}
+
+## Linear variance function
+X = cbind(data$X1, data$X2, data$X3)
+Y = data$Y
+
+beta.new = fit4$coefficients %>% as.vector()
+W = diag(rep(1, length(Y)))
+mdif = 10000
+
+while(mdif > 0.000001){
+  Yhat = f(beta.new, X)
+  r = Y - Yhat
+  Z = cbind(1, Yhat)
+  gam.hat = solve(t(Z) %*% W %*% Z) %*% t(Z) %*% W %*% abs(r)
+  sigma = Z %*% gam.hat
+  S = diag(as.vector(sigma^2))
+  
+  if(is.non.singular.matrix(S)) W = solve(S)
+  else W = solve(S + 0.1^9*diag(rep(1, nrow(S))))
+  
+  ml2 = optim(beta.new, obj.mean, gr = gr.mean, method = 'BFGS', Y=Y, X=X, S=S)
+  beta.old = beta.new
+  beta.new = ml2$par
+  mdif = max(abs(beta.new - beta.old))
+}
+
+beta.new
+
+Yhat = f(beta.new, X)
+sigma = Z %*% gam.hat
+r = (Y - Yhat) / sigma
+```
+
+### (3) Show the residual plot for the best model obtained from part (2).
+
+```{r}
+##Residual plot
+plot(Yhat, r)
+lines(c(0, 140), c(0, 0), col= 'red')
+
+```
+
+이전 플랏에 비해 패턴이 없는 것을 보아 더 등분산 문제가 해결된 것을 확인할 수 있다.
+
+잔차의 정규성을 확인하기 위해 Shapiro Wilk 검정을 시행하였으며, 정규성을 만족하는 것을 확인하였다.
+```{r}
+shapiro.test(r)
+```
+
+### (4) Based on part (2), describe the functional relationships between Y and individual input variables in the model.
+
+모델링 결과는 다음과 같다.
+```{r}
+beta.new
+```
+
+모델링한 결과를 수식으로 적어보면 다음과 같다.
+$$
+Y_i = 32.898+ 4.88X1_i + 13.29X3_i -0.926X3^2_i + \sigma g(z;\gamma_i, \hat{y_i})\epsilon_i , \qquad \epsilon \sim N(0, \tau^2 )
+$$
+
+X3가 고정되어있을 경우, X1가 한단위 증가할 때 Y가 4.88증가한다.
+X3는 Y에 선형적인 영향을 미치지 않고, 2차함수형태의 영향을 미친다고 할 수 있는데
+X1이 고정되어 있을 경우, X3가 11.438까지는 Y가 증가하다가 이후 감소한다.
+
